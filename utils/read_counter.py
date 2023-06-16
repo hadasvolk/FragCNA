@@ -7,6 +7,7 @@ import pickle
 import pandas as pd
 import numpy as np
 import pysam
+import statsmodels.api as sm
 
 
 def per_region(
@@ -81,6 +82,35 @@ class ReadCounter:
                                self.parse_wig(self.map_file, 'map'), 
                                on=['chrom', 'start', 'end'])
         self.gc_map = self.gc_map[self.gc_map['chrom'].isin(self.chroms)]
+
+
+    def correct_readcount(self, data, col_reads, col='gc', frac_rough=0.03, frac_final=0.3):
+        select = data.sample(n=min(len(data), 50000))
+        rough = sm.nonparametric.lowess(select[col_reads], select[col], frac=frac_rough)
+        i = np.linspace(0, 1, num=1001)
+        y_rough = np.interp(i, rough[:, 0], rough[:, 1])
+        final = sm.nonparametric.lowess(y_rough, i, frac=frac_final)
+        interp_final = lambda x: np.interp(x, final[:, 0], final[:, 1])
+        return data[col_reads] / data[col].map(interp_final)
+    
+
+    def process_regions(self):
+        regions = self.gc_map.merge(pd.DataFrame(self.regions[:,1:], index=self.regions[:,0].astype(int)), left_index=True, right_index=True).rename(columns={0:'reads'})
+        regions = regions[(regions['reads'] > 0) & (regions['gc'] > 0)]
+        regions = regions[(regions['reads'] > regions['reads'].quantile(0.01)) & (regions['reads'] < regions['reads'].quantile(0.99))]
+        regions = regions[(regions['gc'] > regions['gc'].quantile(0.01)) & (regions['gc'] < regions['gc'].quantile(0.99))]
+        regions = regions[regions['map'] > 0.8]
+        
+        regions['gc_corrected'] = self.correct_readcount(regions, col_reads='reads', col='gc')
+        upper_quantile = regions['gc_corrected'].quantile(0.99)
+        regions = regions[regions['gc_corrected'] < upper_quantile]
+        regions['map_corrected'] = self.correct_readcount(regions, col_reads='gc_corrected', col='map')
+        regions.loc[regions['map_corrected'] <= 0, 'map_corrected'] = np.nan
+        regions['log2'] = np.log2(regions['map_corrected'])
+        # center to the median
+        regions['log2'] = regions['log2'] - regions['log2'].median()
+
+        return regions
     
 
     def rd(self, control=False):
