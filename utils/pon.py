@@ -33,11 +33,12 @@ class PanelOfNormals:
 
 
     def process_pkl_file(self, bam_file):
-        read_counter, bam_file_name_no_ext = self.sample_to_process(bam_file)
+        read_counter, bam_file_name_no_ext = self.sample_to_process(bam_file, t='Pickle')
         read_counter.read_rd()
         regions = read_counter.process_regions()
         regions = regions[['chrom', 'start', 'end', 'log2']]
         regions.rename(columns={'log2': f'{bam_file_name_no_ext}_log2'}, inplace=True)
+        regions.set_index(['chrom', 'start', 'end'], inplace=True)
         return regions
     
 
