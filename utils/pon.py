@@ -1,11 +1,15 @@
 import os
 import pickle
 import configparser
+import pandas as pd
+import numpy as np
+from concurrent.futures import ProcessPoolExecutor
 
 from read_counter import ReadCounter
 
 class PanelOfNormals:
     def __init__(self, config):
+        self.processes = config.getint('DEFAULT', 'processes')
         self.bam_files = config.get('PON', 'bam_files').split(',')
         self.pon_path = config['PATH']['pon_path']
         os.makedirs(self.pon_path, exist_ok=True)
@@ -24,25 +28,28 @@ class PanelOfNormals:
 
     def process_bam_files(self):
         for bam_file in self.bam_files:
-            read_counter, bam_file_name_no_ext = self.sample_to_process(bam_file)
+            read_counter, bam_file_name_no_ext = self.sample_to_process(bam_file, t='Pickle')
             regions, all_fragment_length_freq = read_counter.rd()
+
+
+    def process_pkl_file(self, bam_file):
+        read_counter, bam_file_name_no_ext = self.sample_to_process(bam_file)
+        read_counter.read_rd()
+        regions = read_counter.process_regions()
+        regions = regions[['chrom', 'start', 'end', 'log2']]
+        regions.rename(columns={'log2': f'{bam_file_name_no_ext}_log2'}, inplace=True)
+        return regions
     
 
     def read_rd(self):
-        median_coverage = []
-        for bam_file in self.bam_files:
-            read_counter, bam_file_name_no_ext = self.sample_to_process(bam_file)
-            read_counter.read_rd()
-            regions = read_counter.process_regions()
-            regions = regions[['chrom', 'start', 'end', 'log2']]
-            regions.rename(columns={'log2': f'{bam_file_name_no_ext}_log2'}, inplace=True)
-            median_coverage.append(regions)
-            del regions
-            del read_counter
-        median_coverage = pd.concat(median_coverage, axis=1)
+        with ProcessPoolExecutor(max_workers=self.processes) as executor:
+            median_coverages = list(executor.map(self.process_pkl_file, self.bam_files))
+        
+        median_coverage_df = pd.concat(median_coverages, axis=1)
+        median_coverage_df['median'] = median_coverage_df.median(axis=1, skipna=True)
         with open(os.path.join(self.pon_path, 'median_coverage.pkl'), 'wb') as f:
-            pickle.dump(median_coverage, f)
-        return median_coverage
+            pickle.dump(median_coverage_df, f)
+        return median_coverage_df
 
 
 if __name__ == '__main__':
