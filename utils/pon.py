@@ -11,22 +11,44 @@ class PanelOfNormals:
         os.makedirs(self.pon_path, exist_ok=True)
         self.read_counter_config = config
 
+
+    def sample_to_process(self, bam_file, t='BAM'):
+        bam_file_name = os.path.basename(bam_file)
+        bam_file_name_no_ext = os.path.splitext(bam_file_name)[0]
+        print(f'Processing {t} file: {bam_file_name_no_ext}')
+        self.read_counter_config.set('PATH', 'bam_file', bam_file)
+        self.read_counter_config.set('PARAMS', 'name', bam_file_name_no_ext)
+        self.read_counter_config.set('PATH', 'outpath', self.pon_path)
+        return ReadCounter(config=self.read_counter_config), bam_file_name_no_ext
+
+
     def process_bam_files(self):
         for bam_file in self.bam_files:
-            bam_file_name = os.path.basename(bam_file)
-            bam_file_name_no_ext = os.path.splitext(bam_file_name)[0]
-            print(f'Processing BAM file: {bam_file}')
-            self.read_counter_config.set('PATH', 'bam_file', bam_file)
-            self.read_counter_config.set('PARAMS', 'name', bam_file_name_no_ext)
-            read_counter = ReadCounter(config=self.read_counter_config)
+            read_counter, bam_file_name_no_ext = self.sample_to_process(bam_file)
             regions, all_fragment_length_freq = read_counter.rd()
-            with open(os.path.join(self.pon_path, f'{bam_file_name_no_ext}.regions.pkl'), 'wb') as f:
-                pickle.dump(regions, f)
+    
+
+    def read_rd(self):
+        median_coverage = []
+        for bam_file in self.bam_files:
+            read_counter, bam_file_name_no_ext = self.sample_to_process(bam_file)
+            read_counter.read_rd()
+            regions = read_counter.process_regions()
+            regions = regions[['chrom', 'start', 'end', 'log2']]
+            regions.rename(columns={'log2': f'{bam_file_name_no_ext}_log2'}, inplace=True)
+            median_coverage.append(regions)
+            del regions
+            del read_counter
+        median_coverage = pd.concat(median_coverage, axis=1)
+        with open(os.path.join(self.pon_path, 'median_coverage.pkl'), 'wb') as f:
+            pickle.dump(median_coverage, f)
+        return median_coverage
 
 
 if __name__ == '__main__':
     config = configparser.ConfigParser()
     config.read('config.ini')
     panel_of_normals = PanelOfNormals(config=config)
-    panel_of_normals.process_bam_files()
+    median = panel_of_normals.read_rd()
+    print(median)
 
