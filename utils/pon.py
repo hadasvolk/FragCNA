@@ -23,7 +23,7 @@ class PanelOfNormals:
         self.read_counter_config.set('PATH', 'bam_file', bam_file)
         self.read_counter_config.set('PARAMS', 'name', bam_file_name_no_ext)
         self.read_counter_config.set('PATH', 'outpath', self.pon_path)
-        return ReadCounter(config=self.read_counter_config), bam_file_name_no_ext
+        return ReadCounter(config=self.read_counter_config, control=True), bam_file_name_no_ext
 
 
     def process_bam_files(self):

@@ -60,7 +60,7 @@ def process_chunk(
     
 
 class ReadCounter:
-    def __init__(self, config) -> None:
+    def __init__(self, config, control = False) -> None:
         self.chunk_size = config['DEFAULT']['chunk_size']
         self.chrom = config.get('DEFAULT', 'chrom', fallback=None)
         self.processes = config.getint('DEFAULT', 'processes')
@@ -72,11 +72,14 @@ class ReadCounter:
         self.ref_file = config['PATH']['ref_file']
         self.gc_file = config['PATH']['gc_file']
         self.map_file = config['PATH']['map_file']
+        self.center_file = config['PATH']['centromere_file']
 
         self.outpath = config['PATH']['outpath']
         os.makedirs(self.outpath, exist_ok=True)
 
         self.name = config['PARAMS']['name']
+
+        self.control = control
 
         self.gc_map = pd.merge(self.parse_wig(self.gc_file, 'gc'), 
                                self.parse_wig(self.map_file, 'map'), 
@@ -94,6 +97,22 @@ class ReadCounter:
         return data[col_reads] / data[col].map(interp_final)
     
 
+    def merge_arm(self, regions):
+        center = pd.read_csv(self.center_file, sep='\t', dtype={'Chr': str, 'Start': int, 'End': int})
+        center = center[['Chr', 'Start', 'End']]
+        center.rename(columns={'Chr': 'chrom', 'Start': 'start', 'End': 'end'}, inplace=True)
+
+        merged_df = pd.merge(regions, center, on='chrom', suffixes=('_bin', '_centromere'))
+        merged_df['arm'] = 'q'
+        merged_df.loc[merged_df['end_bin'] <= merged_df['start_centromere'], 'arm'] = 'p' 
+        merged_df['arm'] = merged_df['chrom'] + merged_df['arm'] 
+        merged_df.rename(columns={'start_bin': 'start', 'end_bin': 'end'}, inplace=True)
+
+        del center
+
+        return merged_df
+    
+
     def process_regions(self):
         regions = self.gc_map.merge(pd.DataFrame(self.regions[:,1:], index=self.regions[:,0].astype(int)), left_index=True, right_index=True).rename(columns={0:'reads'})
         regions = regions[(regions['reads'] > 0) & (regions['gc'] > 0)]
@@ -107,10 +126,20 @@ class ReadCounter:
         regions['map_corrected'] = self.correct_readcount(regions, col_reads='gc_corrected', col='map')
         regions.loc[regions['map_corrected'] <= 0, 'map_corrected'] = np.nan
         regions['log2'] = np.log2(regions['map_corrected'])
-        # center to the median
-        regions['log2'] = regions['log2'] - regions['log2'].median()
+        
+        if self.control:
+            regions['log2'] = regions['log2'] - regions['log2'].median()
+        
+        with open(os.path.join(self.outpath, f'{self.name}.regions.pkl'), 'wb') as f:
+            pickle.dump(regions, f)
 
-        return regions
+        return self.merge_arm(regions)
+    
+
+    def read_regions(self):
+        with open(os.path.join(self.outpath, f'{self.name}.regions.pkl'), 'rb') as f:
+            regions = pickle.load(f)
+        return self.merge_arm(regions)
     
 
     def rd(self, control=False):
@@ -134,7 +163,7 @@ class ReadCounter:
         results = [future.get() for future in futures]
         regions = np.vstack([x[0] for x in results])
 
-        with open(os.path.join(self.outpath, f'{self.name}.regions.pkl'), 'wb') as f:
+        with open(os.path.join(self.outpath, f'{self.name}.rd.pkl'), 'wb') as f:
             pickle.dump(regions, f)
         
         all_fragment_length_lists = []
@@ -152,7 +181,7 @@ class ReadCounter:
     
 
     def read_rd(self):
-        with open(os.path.join(self.outpath, f'{self.name}.regions.pkl'), 'rb') as f:
+        with open(os.path.join(self.outpath, f'{self.name}.rd.pkl'), 'rb') as f:
             self.regions = pickle.load(f)
         with open(os.path.join(self.outpath, f'{self.name}.fragment_length_freq.pkl'), 'rb') as f:
             self.all_fragment_length_freq = pickle.load(f)
