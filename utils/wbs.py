@@ -1,15 +1,29 @@
 import math
 import numpy as np
 import pandas as pd
-from scipy.stats import rankdata
+
+from dataclasses import dataclass
+
+from scipy.stats import chi2
 import matplotlib.pyplot as plt
 
 from cusum import CUSUM
 
 
+@dataclass
+class CPT:
+    s: int
+    e: int
+    median: float
+    mean: float
+
+
 class WBS:
 
-    def __init__(self, x: np.array, M: int = 5000, rand_interval: bool = True, zeros_path: str = None) -> None:
+    def __init__(self, x: np.array, 
+                 M: int = 5000, 
+                 rand_interval: bool = True, 
+                 zeros_path: str = None) -> None:
         
         self.x = x
         self.M = M
@@ -29,12 +43,21 @@ class WBS:
         self.results = []
 
         self.zerosv = pd.read_csv(zeros_path, index_col=0).iloc[:, self.x.shape[1] - 2]
+
+        self.k = np.sqrt(chi2.ppf(0.8, df = x.shape[1]))
     
 
     def __str__(self):
-        
-        return f'WBS(\nx=\n{self.x} \n\nM = {self.M} \n\nrand_interval = {self.rand_interval} \n\nn = {self.n} \n\nintervals = \n{self.intervals} \n\nresults = \n{self.results})'
-
+        return (
+            f'WBS(\n'
+            f'M             = {self.M} \n\n'
+            f'rand_interval = {self.rand_interval} \n\n'
+            f'n             = {self.n} \n\n'
+            f'x             = \n{self.x} \n\n'
+            f'intervals     = \n{self.intervals} \n\n'
+            f'results       = \n{self.results})'
+        )
+    
     
     def intervals_init(self) -> pd.DataFrame:
         
@@ -43,7 +66,7 @@ class WBS:
 
             for i in range(self.M):
                 start = np.random.randint(0, self.n - 2)
-                end = np.random.randint(start + 2, self.n)
+                end = np.random.randint(start + 2, self.n + 1)
                 self.intervals[i, 0] = start
                 self.intervals[i, 1] = end
 
@@ -64,58 +87,67 @@ class WBS:
         return pd.DataFrame(self.intervals, columns=['s', 'e'], dtype=int)
 
 
-    def bs_rec_mulcusum(self, s: int, e: int, minth: float = -1, scale: int = 0) -> None:
-
-        n = e - s + 1
+    def bs_rec_mulcusum(self, s: int, 
+                        e: int, 
+                        minth: float = -1, 
+                        scale: int = 0) -> None:
+        
+        n = e - s
         
         if n > 1:
-            t, pos, p, arr = CUSUM(self.x[s:e], test='bessel', zerosv=self.zerosv).run()
-            cptcand = pos + s
+            t, pos, p, arr = CUSUM(self.x[s:e], test='bessel', zerosv=self.zerosv, k=self.k).run()
+            if pos != 0 and pos != n - 1:
+                cptcand = pos + s
 
-            if minth > t or minth < 0:
-                minth = t
-                
-            self.results.append([s, e, cptcand, t, minth, scale])
+                if minth > t or minth < 0:
+                    minth = t
+                    
+                self.results.append([s, e, cptcand, t, minth, scale])
 
-            self.bs_rec_mulcusum(s, cptcand, minth, scale + 1)
-            self.bs_rec_mulcusum(cptcand, e, minth, scale + 1)
+                self.bs_rec_mulcusum(s, cptcand, minth, scale + 1)
+                self.bs_rec_mulcusum(cptcand, e, minth, scale + 1)
 
 
-    def wbs_rec_mulcusum(self, s: int, e: int, index: list, indexn: int, minth: float = -1, scale: int = 0) -> None:
+    def wbs_rec_mulcusum(self, s: int, 
+                         e: int, 
+                         index: list, 
+                         indexn: int, 
+                         minth: float = -1, 
+                         scale: int = 0) -> None:
         
-        n = e - s + 1
+        n = e - s
 
         if n > 1:
             if indexn > 0:
-                t, pos, p, arr = CUSUM(self.x[s:e], test='bessel', zerosv=self.zerosv).run()
+                t, pos, p, arr = CUSUM(self.x[s:e], test='bessel', zerosv=self.zerosv, k=self.k).run()
+                if pos != 0 and pos != n - 1:
+                    if t < self.wbs_res.loc[index[0], 'CUSUM']:
+                        cptcand = self.wbs_res.loc[index[0], 'cpt']
+                        if minth > self.wbs_res.loc[index[0], 'CUSUM'] or minth < 0:
+                            minth = self.wbs_res.loc[index[0], 'CUSUM']
+                        self.results.append([s, e, cptcand, t, p, scale])
+                    else:
+                        cptcand = pos + s
+                        if minth > t or minth < 0:
+                            minth = t
+                        self.results.append([s, e, cptcand, t, p, scale])
+                    
+                    indexnl, indexnr = [], []
+                    for i in range(indexn):
+                        if self.wbs_res.loc[index[i], 's'] >= s and self.wbs_res.loc[index[i], 'e'] <= cptcand:
+                            indexnl.append(index[i])
+                        elif self.wbs_res.loc[index[i], 's'] >= cptcand + 1 and self.wbs_res.loc[index[i], 'e'] <= e:
+                            indexnr.append(index[i])
+                    
+                    if len(indexnl) > 0:
+                        self.wbs_rec_mulcusum(s, cptcand, indexnl, len(indexnl), minth, scale + 1)
+                    else:
+                        self.bs_rec_mulcusum(s, cptcand, minth, scale + 1)
 
-                if t < self.wbs_res.loc[index[0], 'CUSUM']:
-                    cptcand = self.wbs_res.loc[index[0], 'cpt']
-                    if minth > self.wbs_res.loc[index[0], 'CUSUM'] or minth < 0:
-                        minth = self.wbs_res.loc[index[0], 'CUSUM']
-                    self.results.append([s, e, cptcand, t, p, scale])
-                else:
-                    cptcand = pos + s
-                    if minth > t or minth < 0:
-                        minth = t
-                    self.results.append([s, e, cptcand, t, p, scale])
-                
-                indexnl, indexnr = [], []
-                for i in range(indexn):
-                    if self.wbs_res.loc[index[i], 's'] >= s and self.wbs_res.loc[index[i], 'e'] <= cptcand:
-                        indexnl.append(index[i])
-                    elif self.wbs_res.loc[index[i], 's'] >= cptcand + 1 and self.wbs_res.loc[index[i], 'e'] <= e:
-                        indexnr.append(index[i])
-                
-                if len(indexnl) > 0:
-                    self.wbs_rec_mulcusum(s, cptcand, indexnl, len(indexnl), minth, scale + 1)
-                else:
-                    self.bs_rec_mulcusum(s, cptcand, minth, scale + 1)
-
-                if len(indexnr) > 0:
-                    self.wbs_rec_mulcusum(cptcand, e, indexnr, len(indexnr), minth, scale + 1)
-                else:
-                    self.bs_rec_mulcusum(cptcand, e, minth, scale + 1)
+                    if len(indexnr) > 0:
+                        self.wbs_rec_mulcusum(cptcand, e, indexnr, len(indexnr), minth, scale + 1)
+                    else:
+                        self.bs_rec_mulcusum(cptcand, e, minth, scale + 1)
                 
             else:
                 self.bs_rec_mulcusum(s, e, minth, scale)
@@ -127,7 +159,7 @@ class WBS:
         for i in range(self.M):
             s = self.intervals.loc[i, 's']
             e = self.intervals.loc[i, 'e']
-            t, pos, p, arr = CUSUM(self.x[s:e+1], test='bessel', zerosv=self.zerosv).run()
+            t, pos, p, arr = CUSUM(self.x[s:e], test='bessel', zerosv=self.zerosv, k=self.k).run()
             cptcand = pos + s
             wbs_res.append([s, e, cptcand, t, p])
         
@@ -169,24 +201,35 @@ class WBS:
         return pen * len(cpt)
     
 
-    def changepoint(self, threshold: float = None, threshold_const: float = 1.3, Kmax: int = 50, alpha: float = 1.01, ssic_type: str = "log") -> None:
+    def changepoint(self, threshold: float = 0.1, 
+                    threshold_const: float = 1.3, 
+                    Kmax: int = 50, 
+                    alpha: float = 1, 
+                    ssic_type: str = "log") -> None:
 
         self.results.sort_values(by=['CUSUM'], ascending=False, inplace=True)
-        changepoints = self.results['cpt'].tolist()[0:Kmax]
-        changepoints = [x - 1 for x in changepoints]
+        changepoints = self.results.loc[self.results['pval'] < threshold, 'cpt'].to_list()
+        _, _, _, arr = CUSUM(self.x, test='bessel', zerosv=self.zerosv).run()
 
         ic_curve = np.zeros(len(changepoints) + 1)
         for i in range(len(changepoints), -1, -1):
-            means = WBS.means_between_changepoints(self.x, changepoints[:i])
-            min_log_likelihood = self.n / 2 * np.log(np.sum((self.x - means) ** 2) / self.n)
+            means = WBS.means_between_changepoints(arr, changepoints[:i])
+            min_log_likelihood = self.n / 2 * np.log(np.sum((arr - means) ** 2) / self.n)
             ic_curve[i] = min_log_likelihood + WBS.ssic_penalty(self.n, changepoints[:i], alpha=alpha, ssic_type=ssic_type)
+
         min_ic_index = np.argmin(ic_curve)
         if min_ic_index == 0:
             cpt_ic = None
         else:
             cpt_ic = changepoints[:min_ic_index]
-        self.changepoints = cpt_ic
-
+        
+        changepoints = [0] + sorted(cpt_ic) + [self.n - 1]
+        self.changepoints = dict()
+        for i in range(len(changepoints) - 1):
+            median = np.median(self.x[changepoints[i]:changepoints[i+1] - 1, 0])
+            mean = np.mean(self.x[changepoints[i]:changepoints[i+1] - 1, 0])
+            self.changepoints[i] = CPT(changepoints[i], changepoints[i+1] - 1, median, mean)
+        
 
 
     
@@ -198,9 +241,11 @@ if __name__ == "__main__":
     pd.set_option('display.max_colwidth', None)
 
 
-    data = pd.read_csv('/mnt/c/Users/hadas/Documents/Repos/FragCNA/utils/test/luad34.regions.entropies.csv')
+    data = pd.read_csv('test/luad34.regions.entropies.csv')
 
-    wbs = WBS(data.values)
+    wbs = WBS(data.values, zeros_path='test/zeros.csv')
     wbs.wbs_mulcusum()
-    wbs.results.sort_values(by=['pval']).to_csv('/mnt/c/Users/hadas/Documents/Repos/FragCNA/utils/test/wbs.mulcusum.csv', index=False)
-    print(wbs.changepoint())
+    wbs.results.sort_values(by=['pval']).to_csv('test/wbs.mulcusum.csv', index=False)
+    wbs.changepoint()
+    for k, v in wbs.changepoints.items():
+        print(k, v)

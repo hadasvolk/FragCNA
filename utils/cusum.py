@@ -10,7 +10,7 @@ from typing import Tuple
 
 class CUSUM:
 
-    def __init__(self, data: np.ndarray, test: str = 'bessel', zerosv: np.ndarray = None) -> None:
+    def __init__(self, data: np.ndarray, test: str = 'bessel', zerosv: np.ndarray = None, k: float = 1.5) -> None:
 
         self.data = data
         self.n, self.m = data.shape
@@ -18,20 +18,24 @@ class CUSUM:
 
         self.zerosv = zerosv
 
+        self.k = k
+
 
     def run(self) -> Tuple[float, int, float, np.ndarray]:
         if self.test == 'bessel':
             return self.cusum()
+        elif self.test == 'permutation':
+            return self.cusum_perm()
 
 
     def cusum_perm(self, num_permutations: int = 1000) -> Tuple[float, int, float, np.ndarray]:
 
-        max_cusum, arg_max_cusum, cusum_stats = cusum_ma(self.data, self.n, self.m)
+        max_cusum, arg_max_cusum, cusum_stats = cusum_ma(self.data, self.n, self.m, self.k)
 
         p_val = 0
         for _ in range(num_permutations):
             perm_data = shuffle(self.data)
-            max_cusum_perm, _, _ = cusum_ma(perm_data)
+            max_cusum_perm, _, _ = cusum_ma(perm_data, self.n, self.m, self.k)
             if max_cusum_perm >= max_cusum:
                 p_val += 1
         p_val /= num_permutations
@@ -40,7 +44,7 @@ class CUSUM:
 
     def cusum(self) -> Tuple[float, int, float, np.ndarray]:
 
-        max_cusum, arg_max_cusum, cusum_stats = cusum_ma(self.data, self.n, self.m)
+        max_cusum, arg_max_cusum, cusum_stats = cusum_ma(self.data, self.n, self.m, self.k)
 
         tn = np.sqrt(max_cusum)
 
@@ -56,22 +60,7 @@ class CUSUM:
 
 
 @jit(nopython=True)
-def cusum_ma(data: np.ndarray, n: int = None, m: int = None) -> Tuple[float, int, np.ndarray]:
-
-    # Precomputed chi2.ppf(0.8, df = df)
-    # k = np.sqrt(chi2.ppf(0.8, df = data.shape[1]))
-    chi2 = {
-        1: 1.642374415149818,
-        2: 3.218875824868201,
-        3: 4.64162767608745,
-        4: 5.9886166940042465,
-        5: 7.289276126648961,
-        6: 8.558059720250668,
-        7: 9.803249900240838,
-        8: 11.03009143030311,
-        9: 12.24214546984707
-    }
-
+def cusum_ma(data: np.ndarray, n: int = None, m: int = None, k: float = None) -> Tuple[float, int, np.ndarray]:
 
     def _medians(data):
         medians = np.empty(data.shape[1])
@@ -88,7 +77,6 @@ def cusum_ma(data: np.ndarray, n: int = None, m: int = None) -> Tuple[float, int
 
     norms = np.array([np.linalg.norm(row) for row in data])
 
-    k = np.sqrt(chi2[m])
     for i in range(n):
         if norms[i] > k:
             data[i, :] = data[i, :] * k / norms[i]
@@ -97,7 +85,6 @@ def cusum_ma(data: np.ndarray, n: int = None, m: int = None) -> Tuple[float, int
     cov_mat = lrv(data, int(bandwidth), kBartlett)
     cov_mat_inv = np.linalg.pinv(cov_mat)
 
-    # data_cumsum = np.cumsum(data, axis=0)
     data_cumsum = np.empty((n, m))
     for i in range(m):
         data_cumsum[:, i] = np.cumsum(data[:, i])
@@ -191,14 +178,21 @@ def lrv(x: np.ndarray, bandwidth: int, kernel) -> np.ndarray:
 
 if __name__ == '__main__':
 
-    data = pd.read_csv('/mnt/c/Users/hadas/Documents/Repos/FragCNA/utils/test/luad34.regions.entropies.csv').values
+    data = pd.read_csv('test/luad34.regions.entropies.csv').values
     zerosv = pd.read_csv('test/zeros.csv', index_col=0).iloc[:, data.shape[1] - 2]
-    t1, pos1, p1, first = CUSUM(data, zerosv=zerosv).run()
-    t2, pos2, p2, second = CUSUM(data[:pos1], zerosv=zerosv).run()
-    t3, pos3, p3, third = CUSUM(data[pos1:], zerosv=zerosv).run()
+    from scipy.stats import chi2
+    k = np.sqrt(chi2.ppf(0.8, df = data.shape[1]))
+    test = 'bessel'
+    from time import time
+    tp1 = time()
+    t1, pos1, p1, first = CUSUM(data, zerosv=zerosv, test=test, k=k).run()
+    t2, pos2, p2, second = CUSUM(data[:pos1], zerosv=zerosv, test=test, k=k).run()
+    t3, pos3, p3, third = CUSUM(data[pos1:], zerosv=zerosv, test=test, k=k).run()
+    tp2 = time()
 
     print(f'Tstats: {t1} {t2} {t3}')
     print(f'pos: {pos1} {pos2} {pos3}')
     print(f'pval: {p1} {p2} {p3}')
 
+    print(f'time: {tp2 - tp1}')
                 
